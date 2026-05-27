@@ -237,4 +237,4 @@ ORDER BY degree DESC LIMIT 20
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2025 Julian Dehs
