@@ -23,17 +23,41 @@ From the provided SEC filing excerpt extract in one pass:
 Only include information explicitly stated in the text.
 Confidence (0.0–1.0) should reflect strength of textual evidence."""
 
-_ENTITY_SCHEMA = EntityList.model_json_schema()
-_REL_SCHEMA = RelationshipList.model_json_schema()
+def _build_combined_schema() -> dict:
+    """Build a flat combined schema with merged $defs.
 
-COMBINED_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "entities": _ENTITY_SCHEMA,
-        "relationships": _REL_SCHEMA,
-    },
-    "required": ["entities", "relationships"],
-}
+    EntityList/RelationshipList model_json_schema() each produce a wrapper
+    object schema ({"type": "object", "properties": {"entities": [...]}, ...}).
+    Embedding those directly as property values causes the LLM to generate a
+    doubly-nested response.  Instead we pull out the $defs and declare
+    `entities` / `relationships` as plain arrays whose items $ref the
+    underlying models.
+    """
+    entity_schema = EntityList.model_json_schema()
+    rel_schema = RelationshipList.model_json_schema()
+    defs: dict = {}
+    defs.update(entity_schema.get("$defs", {}))
+    defs.update(rel_schema.get("$defs", {}))
+    schema: dict = {
+        "type": "object",
+        "properties": {
+            "entities": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/Entity"},
+            },
+            "relationships": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/Relationship"},
+            },
+        },
+        "required": ["entities", "relationships"],
+    }
+    if defs:
+        schema["$defs"] = defs
+    return schema
+
+
+COMBINED_SCHEMA = _build_combined_schema()
 
 
 def build_batch_request(chunk_id: str, text: str, model: str) -> dict:
@@ -68,8 +92,19 @@ def parse_batch_response(result_line: dict) -> tuple[list[Entity], list[Relation
             return [], []
         content = result_line["response"]["body"]["choices"][0]["message"]["content"]
         data = json.loads(content)
-        entities = EntityList.model_validate({"entities": data.get("entities", [])}).entities
-        relationships = RelationshipList.model_validate({"relationships": data.get("relationships", [])}).relationships
+
+        # Defensive unwrapping: old schema bug caused the LLM to produce
+        # {"entities": {"entities": [...]}} instead of {"entities": [...]}.
+        raw_entities = data.get("entities", [])
+        if isinstance(raw_entities, dict):
+            raw_entities = raw_entities.get("entities", [])
+
+        raw_rels = data.get("relationships", [])
+        if isinstance(raw_rels, dict):
+            raw_rels = raw_rels.get("relationships", [])
+
+        entities = EntityList.model_validate({"entities": raw_entities}).entities
+        relationships = RelationshipList.model_validate({"relationships": raw_rels}).relationships
         return entities, relationships
     except Exception as exc:
         logger.warning("Failed to parse batch response: %s", exc)
