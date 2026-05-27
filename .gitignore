@@ -1,1 +1,15 @@
 /.env
+
+# Next.js build output
+frontend/.next/
+frontend/node_modules/
+
+# Python
+**/__pycache__/
+**/*.pyc
+backend/.venv/
+
+# Docker volumes (if accidentally created locally)
+neo4j_data/
+qdrant_data/
+redis_data/
