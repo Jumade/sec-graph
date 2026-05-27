@@ -14,30 +14,34 @@ def _safe_label(label: str) -> str:
 
 
 def shortest_path(client: Neo4jClient, start: str, end: str, max_depth: int = 6) -> list[dict]:
-    query = """
-    MATCH (a {name: $start}), (b {name: $end})
-    MATCH path = shortestPath((a)-[*1..$depth]-(b))
-    RETURN [node IN nodes(path) | {name: node.name, labels: labels(node)}] AS nodes,
+    # shortestPath does not accept a parameterized depth — must be a literal
+    query = f"""
+    MATCH (a {{name: $start}}), (b {{name: $end}})
+    MATCH path = shortestPath((a)-[*1..{max_depth}]-(b))
+    RETURN [node IN nodes(path) | {{name: node.name, labels: labels(node)}}] AS nodes,
            [rel IN relationships(path) | type(rel)] AS rels
     LIMIT 1
     """
-    results = client.run(query, start=start, end=end, depth=max_depth)
+    results = client.run(query, start=start, end=end)
     return results[0] if results else {}
 
 
-def expand_neighbors(client: Neo4jClient, name: str, depth: int = 2) -> dict[str, Any]:
-    query = """
-    MATCH (root {name: $name})
-    CALL apoc.path.subgraphAll(root, {maxLevel: $depth}) YIELD nodes, relationships
+def expand_neighbors(client: Neo4jClient, name: str, depth: int = 1, max_nodes: int = 40) -> dict[str, Any]:
+    # depth=1 keeps only direct neighbours (depth 2 explodes on dense graphs)
+    # max_nodes caps the subgraph so the visualisation stays readable
+    query = f"""
+    MATCH (root {{name: $name}})
+    CALL apoc.path.subgraphAll(root, {{maxLevel: {depth}}}) YIELD nodes, relationships
+    WITH nodes[..{max_nodes}] AS limited, relationships
+    WITH limited, [n IN limited | n.name] AS names, relationships
     RETURN
-      [n IN nodes | {id: toString(id(n)), name: n.name, label: labels(n)[0]}] AS nodes,
-      [r IN relationships | {
-        source: toString(startNode(r).name),
-        target: toString(endNode(r).name),
-        type: type(r)
-      }] AS edges
+      [n IN limited | {{id: toString(id(n)), name: n.name, label: labels(n)[0]}}] AS nodes,
+      [r IN relationships
+       WHERE startNode(r).name IN names AND endNode(r).name IN names
+       | {{source: toString(startNode(r).name), target: toString(endNode(r).name), type: type(r)}}
+      ] AS edges
     """
-    results = client.run(query, name=name, depth=depth)
+    results = client.run(query, name=name)
     return results[0] if results else {"nodes": [], "edges": []}
 
 

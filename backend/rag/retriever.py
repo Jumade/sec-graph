@@ -43,8 +43,8 @@ async def retrieve(
     combined_nodes: list[dict] = []
     combined_edges: list[dict] = []
 
-    for name in entity_names[:5]:  # limit to 5 entities per query
-        subgraph = expand_neighbors(neo4j, name, depth=2)
+    for name in entity_names[:3]:  # limit to 3 entities per query
+        subgraph = expand_neighbors(neo4j, name, depth=1)
         combined_nodes.extend(subgraph.get("nodes", []))
         combined_edges.extend(subgraph.get("edges", []))
 

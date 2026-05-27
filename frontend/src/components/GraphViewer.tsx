@@ -39,17 +39,34 @@ export default function GraphViewer({ nodes, edges, onNodeClick }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  const graphData = useMemo(() => {
-    const nodeSet = new Set(nodes.map((n) => n.name));
+  const MAX_DISPLAY = 60;
+
+  const { graphData, totalNodes } = useMemo(() => {
+    // Prune oversized graphs: keep the top MAX_DISPLAY nodes by connection degree
+    const degree: Record<string, number> = {};
+    edges.forEach((e) => {
+      degree[e.source] = (degree[e.source] || 0) + 1;
+      degree[e.target] = (degree[e.target] || 0) + 1;
+    });
+
+    const sorted = [...nodes].sort(
+      (a, b) => (degree[b.name] || 0) - (degree[a.name] || 0)
+    );
+    const display = sorted.slice(0, MAX_DISPLAY);
+    const displaySet = new Set(display.map((n) => n.name));
+
     return {
-      nodes: nodes.map((n) => ({
-        ...n,
-        id: n.name,
-        color: LABEL_COLORS[n.label] || LABEL_COLORS.default,
-      })),
-      links: edges
-        .filter((e) => nodeSet.has(e.source) && nodeSet.has(e.target))
-        .map((e) => ({ source: e.source, target: e.target, label: e.type })),
+      totalNodes: nodes.length,
+      graphData: {
+        nodes: display.map((n) => ({
+          ...n,
+          id: n.name,
+          color: LABEL_COLORS[n.label] || LABEL_COLORS.default,
+        })),
+        links: edges
+          .filter((e) => displaySet.has(e.source) && displaySet.has(e.target))
+          .map((e) => ({ source: e.source, target: e.target, label: e.type })),
+      },
     };
   }, [nodes, edges]);
 
@@ -175,6 +192,11 @@ export default function GraphViewer({ nodes, edges, onNodeClick }: Props) {
           </span>
         ))}
       </div>
+      {totalNodes > MAX_DISPLAY && (
+        <div className="absolute top-3 right-3 text-xs bg-gray-900/80 border border-gray-700 text-gray-400 px-2 py-1 rounded">
+          Showing {MAX_DISPLAY} of {totalNodes} nodes · top by connections
+        </div>
+      )}
     </div>
   );
 }
