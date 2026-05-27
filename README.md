@@ -21,45 +21,52 @@ Standard RAG can retrieve relevant text passages. GraphRAG also traverses the *r
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Frontend (Next.js)                       │
-│  /ingest — submit jobs, track progress    /query — ask + graph   │
-└───────────────────────┬─────────────────────────┬───────────────┘
-                        │ REST                     │ REST
-                        ▼                         ▼
-┌───────────────────────────────────────────────────────────────────┐
-│                      FastAPI Backend (:8000)                       │
-│  POST /ingest   GET /ingest/status/:id   DELETE /ingest/:id        │
-│  POST /query    GET /graph/entity/:name  GET /graph/path           │
-└────────────┬───────────────────────────────────┬──────────────────┘
-             │ Celery task                        │ sync query
-             ▼                                   ▼
-┌────────────────────────┐          ┌────────────────────────────┐
-│    Celery Worker(s)    │          │       GraphRAG Retriever    │
-│                        │          │                             │
-│  Ingestion Pipeline    │          │  1. Embed question          │
-│  ─────────────────     │          │  2. Qdrant vector search    │
-│  1. SEC EDGAR fetch    │          │  3. Extract entity mentions │
-│  2. Parse HTML/PDF     │          │  4. Neo4j neighbor expand   │
-│  3. Chunk (1800 tok)   │          │  5. Shortest-path traversal │
-│  4. LLM extract        │          │  6. LLM answer synthesis    │
-│     entities + rels    │          └────────────┬───────────────┘
-│  5. Embed chunks       │                       │
-│  6. Write Neo4j        │                       │
-│  7. Write Qdrant       │                       │
-└────┬───────────────────┘                       │
-     │                                           │
-     ▼                                           ▼
-┌──────────┐  ┌──────────────┐  ┌───────────────────────┐
-│  Redis   │  │    Neo4j     │  │        Qdrant          │
-│          │  │              │  │                        │
-│ Job      │  │ Knowledge    │  │ Dense vector index     │
-│ status   │  │ graph of     │  │ of filing chunks       │
-│ Task IDs │  │ entities and │  │ (text-embedding-3-     │
-│ Batch    │  │ relationships│  │  small, 1536-dim)      │
-│ context  │  │              │  │                        │
-└──────────┘  └──────────────┘  └───────────────────────┘
+```mermaid
+graph TD
+    FE["🖥️ Frontend · Next.js :3000\n/ingest — submit & track jobs\n/query — ask questions & explore graph"]
+
+    API["⚡ FastAPI Backend · :8000\nPOST /ingest · GET /ingest/status/:id · DELETE /ingest/:id\nPOST /query · GET /graph/entity/:name · GET /graph/path"]
+
+    subgraph Ingestion ["⚙️ Ingestion Pipeline (Celery Worker)"]
+        direction TB
+        I1["1 · Fetch from SEC EDGAR"]
+        I2["2 · Parse HTML / PDF"]
+        I3["3 · Chunk — 1 800 tok, 200 overlap"]
+        I4["4 · LLM extract entities + relationships"]
+        I5["5 · Embed chunks"]
+        I6["6 · Write to Neo4j + Qdrant"]
+        I1 --> I2 --> I3 --> I4 --> I5 --> I6
+    end
+
+    subgraph Retrieval ["🔍 GraphRAG Retriever (sync)"]
+        direction TB
+        R1["1 · Embed question"]
+        R2["2 · Qdrant vector search — top 20 chunks"]
+        R3["3 · Extract entity mentions from question"]
+        R4["4 · Neo4j neighbor expansion — depth 2"]
+        R5["5 · Neo4j shortest-path between entity pairs"]
+        R6["6 · LLM answer synthesis"]
+        R1 --> R2
+        R1 --> R3 --> R4
+        R3 --> R5
+        R2 --> R6
+        R4 --> R6
+        R5 --> R6
+    end
+
+    Redis[("🔴 Redis\nJob status · Task IDs\nBatch context")]
+    Neo4j[("🟢 Neo4j\nKnowledge graph\nEntities + Relationships")]
+    Qdrant[("🔵 Qdrant\nDense vector index\nFiling chunks")]
+
+    FE -->|REST| API
+    API -->|Celery task| Ingestion
+    API -->|sync query| Retrieval
+    Ingestion -->|write status| Redis
+    Ingestion -->|upsert| Neo4j
+    Ingestion -->|upsert| Qdrant
+    Retrieval -->|traverse| Neo4j
+    Retrieval -->|search| Qdrant
+    API -->|read status| Redis
 ```
 
 ### Entity & Relationship Types
@@ -80,18 +87,22 @@ All chunks for a filing are uploaded as a single JSONL file to the OpenAI Batch 
 
 ### GraphRAG Retrieval Flow
 
-```
-User question
-      │
-      ├─► Embed query ──────────────────► Qdrant top-20 semantic chunks
-      │
-      ├─► Extract entities from question ► Neo4j neighbor expansion (depth 2)
-      │                                         for each entity
-      │
-      └─► Entity pairs ──────────────────► Neo4j shortest-path traversal
-                                                between entity pairs
+```mermaid
+flowchart LR
+    Q(["❓ User question"])
 
-All context → OpenAI model → Answer + citations + graph subgraph
+    Q --> E["Embed question"]
+    E --> VS["Qdrant\nvector search\ntop-20 chunks"]
+
+    Q --> EE["Extract entity\nmentions"]
+    EE --> NE["Neo4j\nneighbor expansion\ndepth 2"]
+    EE --> SP["Neo4j\nshortest path\nbetween entity pairs"]
+
+    VS --> LLM["🤖 LLM\nanswer synthesis"]
+    NE --> LLM
+    SP --> LLM
+
+    LLM --> A(["✅ Answer\n+ citations\n+ graph subgraph"])
 ```
 
 ---
